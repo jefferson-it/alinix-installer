@@ -3,43 +3,45 @@ import { partitionDisk } from "./partDisk.ts";
 import { toDev } from "../../modules/disk/replace.ts";
 
 export async function createDiskScript() {
-    const diskScript = [
-        "#!/bin/bash",
-        "set -e"
-    ];
+    const encode = new TextEncoder();
+    const diskScript: string[] = ["#!/bin/bash", "set -e"];
+
+    const tmpFolder: string = (globalThis.tmpFolder as string) || "/tmp/mnt";
 
     for (const disk of disks) {
         const sc = await partitionDisk(disk);
         diskScript.push(...sc);
 
-        // Ordenar partições por profundidade do mountpoint
-        const sortedParts = disk.children
-            .filter(part => part.mountPoint && (part.fileSystem || part.erase))
+        const sortedParts = (disk.children || [])
+            .filter((p) => p.mountPoint)
             .sort((a, b) =>
-                (a.mountPoint?.split('/').length ?? 0) -
-                (b.mountPoint?.split('/').length ?? 0)
+                (a.mountPoint?.length ?? 0) - (b.mountPoint?.length ?? 0)
             );
 
         for (const part of sortedParts) {
             const devName = part.name;
-            if (part.mountPoint) {
-                const pathDir = path.join(tmpFolder, part.mountPoint);
+            if (!part.mountPoint) continue;
 
-                diskScript.push(`mkdir -p ${pathDir}`);
+            const pathDir = path.join(tmpFolder, part.mountPoint);
+            diskScript.push(`mkdir -p ${pathDir}`);
 
-                if (part.mountPoint === '/boot/efi') {
-                    //  Montagem reforçada com verificação de FS
-                    diskScript.push(`
-                blkid ${toDev(devName)} | grep -q 'vfat' || mkfs.vfat -F32 ${toDev(devName)}
-                mount -t vfat ${toDev(devName)} ${pathDir} || echo '[!] Falha ao montar EFI: ${toDev(devName)}'
-            `);
-                    continue;
-                }
+            if (part.mountPoint === '/boot/efi') {
 
-                diskScript.push(`mount ${toDev(devName)} ${pathDir}`);
+                const deviceExpr = part.UUID ? `$(blkid -U ${part.UUID} 2>/dev/null || echo ${toDev(devName)})` : `${toDev(devName)}`;
+
+                diskScript.push(`mount -t vfat ${deviceExpr} ${pathDir} || echo '[!] Falha ao montar EFI: ${deviceExpr}'`);
+
+                continue;
+            }
+
+            if (part.UUID) {
+                diskScript.push(`mount -U ${part.UUID} ${pathDir} || mount ${toDev(devName)} ${pathDir} || echo '[!] Falha ao montar: UUID=${part.UUID} or ${toDev(devName)}'`);
+            } else {
+                diskScript.push(`mount ${toDev(devName)} ${pathDir} || echo '[!] Falha ao montar: ${toDev(devName)}'`);
             }
         }
 
+        diskScript.push(`mount | grep ${toDev(disk.name)}`);
     }
 
     Deno.writeFileSync('./disk.sh', encode.encode(diskScript.join('\n')), { mode: 0o755 });

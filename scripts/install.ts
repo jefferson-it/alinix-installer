@@ -3,11 +3,11 @@ import * as path from "https://deno.land/std@0.224.0/path/mod.ts";
 import { writeGrub } from "./system/grub.ts";
 import { postInstall } from "./user/post_install.ts";
 import { applyRepo } from "./system/write_repo.ts";
-import { connectWiFiInteractive } from "../modules/wifi_connect.ts";
+import { connectWiFiInChroot, connectWiFiInteractive } from "../modules/wifi_connect.ts";
 import { Select } from "https://deno.land/x/cliffy@v0.25.5/prompt/select.ts";
 import { execCmd } from "./system/exec.ts";
 import { createDiskScript } from "./disk/createDisk.ts";
-import { chrootTestNetwork, testNetwork } from "./network.ts";
+import { testNetwork } from "./network.ts";
 import { CreateUser } from "./user/create.ts";
 import { mountDevices } from "./system/mount.ts";
 import { genFstab } from "./system/fstab.ts";
@@ -47,28 +47,45 @@ export default async function InstallProcess() {
     }
 
     await CreateUser();
-    await mountDevices()
+    await mountDevices();
 
-    console.log("Resolvendo rede para o chroot...");
-    await execCmd("rm", [path.join(tmpFolder, "etc/resolv.conf")]);
     console.log("> Configurando rede...");
 
+
+    if (!await testNetwork()) {
+        if (globalThis.wifi) {
+            await connectWiFiInChroot(globalThis.wifi.ssid, globalThis.wifi.password)
+        } else {
+            await connectWiFiInteractive();
+        }
+    }
+    try {
+        console.log("> Copiando DNS do host para o chroot...");
+        Deno.copyFileSync("/etc/resolv.conf", `${tmpFolder}/etc/resolv.conf`);
+    } catch (err) {
+        console.error("Erro ao copiar /etc/resolv.conf:", err);
+        // Lidar com o erro, talvez o instalador não possa continuar
+        return;
+    }
+
     await execCmd("chroot", [
-        tmpFolder,
-        "bash",
-        "-c",
-        `
-        rm -f /etc/resolv.conf
-        mkdir -p /run/systemd/resolve
-        touch /run/systemd/resolve/stub-resolv.conf
-        ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
-        `
+        tmpFolder, "bash", "-c",
+        "export DEBIAN_FRONTEND=noninteractive; apt update; apt install -y network-manager"
     ]);
 
+    await execCmd("chroot", [
+        tmpFolder, "bash", "-c",
+        "systemctl enable NetworkManager.service; systemctl enable systemd-resolved.service"
+    ]);
 
-    if (!await chrootTestNetwork() || !await testNetwork()) {
-        await connectWiFiInteractive();
-    }
+    const netplanConfig = `
+# Configuração de rede padrão para o sistema instalado
+network:
+  version: 2
+  renderer: NetworkManager
+`;
+    Deno.mkdirSync(`${tmpFolder}/etc/netplan`, { recursive: true });
+    Deno.writeTextFileSync(`${tmpFolder}/etc/netplan/01-config.yaml`, netplanConfig);
 
     await genFstab()
 

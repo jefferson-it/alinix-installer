@@ -9,7 +9,7 @@ const decoder = new TextDecoder();
  * Lista redes Wi-Fi visíveis (via nmcli ou iwlist)
  */
 async function listWiFiNetworks() {
-    await configNetwork();
+    // await configNetwork();
 
     // Testa se nmcli está disponível
     const nmcli = new Deno.Command("which", { args: ["nmcli"] });
@@ -85,7 +85,7 @@ export async function connectWiFiInteractive() {
 }
 
 
-async function connectWiFiInChroot(ssid: string, password: string) {
+export async function connectWiFiInChroot(ssid: string, password: string) {
     const cmd = new Deno.Command("chroot", {
         args: [tmpFolder, "nmcli", "device", "wifi", "connect", ssid, "password", password],
         stdout: "piped",

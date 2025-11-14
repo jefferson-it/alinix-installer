@@ -6,37 +6,6 @@ export async function copyBootFiles() {
 
     console.log("Instalando kernel Linux no sistema...");
 
-    // CRÍTICO: Instalar o kernel via apt para que update-grub funcione corretamente
-    try {
-        await execCmd("chroot", [
-            tmpFolder,
-            "bash",
-            "-c",
-            `
-            set -e
-            apt-get update
-            
-            # Instalar kernel genérico
-            apt-get install -y linux-image-generic linux-headers-generic
-            
-            # Verificar se o kernel foi instalado
-            if [ ! -f /boot/vmlinuz-* ]; then
-                echo "ERRO: Kernel não foi instalado!"
-                exit 1
-            fi
-            
-            echo "Kernel instalado:"
-            ls -lh /boot/vmlinuz-*
-            ls -lh /boot/initrd.img-*
-            `
-        ]);
-        console.log("Kernel instalado com sucesso!");
-    } catch (e) {
-        console.error("Erro ao instalar kernel:", e);
-        throw new Error("Falha ao instalar kernel Linux");
-    }
-
-    // Opcional: Copiar kernel da ISO como backup (caso o apt falhe)
     let kernelPath = null;
     try {
         const output = await execCmd("find", [
@@ -63,7 +32,6 @@ export async function copyBootFiles() {
         console.log("[ i ] Nenhum initrd encontrado na ISO (normal se instalando via apt)");
     }
 
-    // Se encontrou kernel na ISO, copiar como backup
     if (kernelPath) {
         try {
             const kernelVersion = await execCmd("chroot", [
@@ -142,9 +110,4 @@ export async function copyBootFiles() {
         console.warn("Não foi possível listar arquivos de boot");
     }
 
-    return {
-        kernel: "Instalado via apt",
-        initrd: "Instalado via apt",
-        isEFI
-    };
 }

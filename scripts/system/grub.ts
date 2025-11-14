@@ -22,7 +22,7 @@ export async function writeGrub() {
         const grubConfig = `GRUB_DEFAULT=0
 GRUB_TIMEOUT=5
 GRUB_DISTRIBUTOR="Alinix"
-GRUB_CMDLINE_LINUX_DEFAULT="quiet splash components ip=dhcp fsck.mode=skip"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash components fsck.mode=skip"
 GRUB_CMDLINE_LINUX=""
 GRUB_TERMINAL=console
 GRUB_DISABLE_OS_PROBER=false

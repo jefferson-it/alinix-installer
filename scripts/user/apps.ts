@@ -1,5 +1,4 @@
 import { allApps } from "../../modules/apps.ts";
-import { isUEFI } from "../disk/verify.ts";
 
 export async function defineApps() {
     const script = [
@@ -8,7 +7,6 @@ export async function defineApps() {
         "apt-get update",
     ];
     const toRemove = [];
-    //  Gera lista de pacotes a instalar via apt
     const desktopTarget = allApps.find(v => v.value === desktop);
     const pkgsApp = allApps
         .filter(({ value }) => apps.includes(value))
@@ -56,6 +54,19 @@ export async function defineApps() {
             "wget https://downloads.apache.org/netbeans/netbeans/27/netbeans-27-bin.zip -O ./netbeans.zip",
             "apt-get install unzip -y",
             "unzip ./netbeans.zip -d /opt/",
+            `
+            cat <<EOF > /usr/share/applications/netbeans.desktop
+[Desktop Entry]
+Name=NetBeans IDE 27
+Comment=Apache NetBeans Integrated Development Environment
+Exec=/opt/netbeans/bin/netbeans
+Icon=/opt/netbeans/nb/netbeans.png
+Terminal=false
+Type=Application
+Categories=Development;IDE;
+StartupNotify=true
+EOF
+`
         );
 
         toRemove.push('./netbeans.zip')

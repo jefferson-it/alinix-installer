@@ -6,7 +6,6 @@ export async function genFstab() {
     console.log("Gerando fstab...");
     const fstabPath = path.join(tmpFolder, "etc/fstab");
 
-    // Garantir que o diretório /etc exista
     Deno.mkdirSync(path.dirname(fstabPath), { recursive: true });
 
     try {
@@ -31,7 +30,8 @@ export async function genFstab() {
                 if [[ -n "$mountpoint" && "$mountpoint" == "${tmpFolder}"* ]]; then
                     guest_mountpoint=$(echo "$mountpoint" | sed "s|^${tmpFolder}||")
                     [ -z "$guest_mountpoint" ] && guest_mountpoint="/"
-                    if [[ -n "$uuid" && -n "$type" && -n "$guest_mountpoint" ]]; {
+                    
+                    if [[ -n "$uuid" && -n "$type" && -n "$guest_mountpoint" ]]; then
                         # Adiciona cabeçalho se o arquivo estiver vazio
                         if [ ! -s ${fstabPath} ]; then
                             echo "# /etc/fstab: static file system information." > ${fstabPath}
@@ -42,11 +42,10 @@ export async function genFstab() {
                         if [ "$guest_mountpoint" == "/" ]; then
                             echo "UUID=$uuid $guest_mountpoint $type defaults 0 1" >> ${fstabPath}
                         elif [ "$guest_mountpoint" == "/boot/efi" ]; then
-                             echo "UUID=$uuid $guest_mountpoint vfat defaults 0 2" >> ${fstabPath}
+                            echo "UUID=$uuid $guest_mountpoint vfat defaults 0 2" >> ${fstabPath}
                         else
-                             echo "UUID=$uuid $guest_mountpoint $type defaults 0 2" >> ${fstabPath}
+                            echo "UUID=$uuid $guest_mountpoint $type defaults 0 2" >> ${fstabPath}
                         fi
-                    }
                     fi
                 fi
             done
@@ -56,7 +55,7 @@ export async function genFstab() {
 
     try {
         const fstabContent = await Deno.readTextFile(fstabPath);
-        if (!fstabContent.includes("UUID=") || !fstabContent.includes(" / ")) {
+        if (!fstabContent.includes("UUID=") || !fstabContent.trim().match(/UUID=.*\s+\/\s+/)) {
             console.warn("⚠️  fstab parece incompleto ou vazio, recriando com método básico...");
             await createBasicFstab(fstabPath);
         }
@@ -67,65 +66,101 @@ export async function genFstab() {
 }
 
 /**
- * Fallback final: Cria um fstab básico apenas com Raiz e EFI.
- * Esta é a correção principal.
+ * Fallback final: Cria um fstab básico identificando dinamicamente
+ * todos os pontos de montagem atualmente montados em tmpFolder
  */
 async function createBasicFstab(fstabPath: string) {
-    console.log("⚠️  Recriando fstab básico (Raiz + EFI)...");
+    console.log("⚠️  Recriando fstab básico (detectando pontos de montagem)...");
 
-    // Começa com o cabeçalho
     let fstabContent = `# /etc/fstab: static file system information.
 #
 # <file system> <mount point> <type> <options> <dump> <pass>
 `;
 
-    // 1. Obter partição Raiz
     try {
-        const rootPartition = disks.flatMap(d => d.children)
-            .find(p => p.mountPoint === "/")?.name;
+        // 1. Obter todos os pontos de montagem sob tmpFolder usando findmnt
+        const findmntOutput = await execCmd("findmnt", [
+            "-rno", "TARGET,SOURCE,FSTYPE",
+            "-R", tmpFolder
+        ]);
 
-        if (rootPartition) {
-            const rootDevice = toDev(rootPartition);
-            const stdout = await execCmd('blkid', ['-s', 'UUID', '-o', 'value', rootDevice]);
-            const rootUuid = stdout.trim();
-            // Adiciona a linha da raiz
-            fstabContent += `UUID=${rootUuid} / ext4 defaults 0 1\n`;
-            console.log("✅ Adicionada partição Raiz (/) ao fstab básico.");
-        } else {
-            console.error("❌ Não foi possível encontrar a partição raiz para o fstab básico.");
-            throw new Error("Partição raiz não encontrada.");
+        const mounts = findmntOutput.trim().split("\n")
+            .map(line => {
+                const [target, source, fstype] = line.trim().split(/\s+/);
+                return { target, source, fstype };
+            })
+            .filter(m => m.target && m.source && m.fstype);
+
+        if (mounts.length === 0) {
+            throw new Error("Nenhum ponto de montagem encontrado");
         }
-    } catch (e) {
-        console.error("❌ Erro ao obter UUID da raiz:", (e as Error).message);
-        throw e; // Lança erro, sem raiz o sistema não bota
-    }
 
-    // 2. Obter partição EFI (se existir)
-    try {
-        const efiPartition = disks.flatMap(d => d.children)
-            .find(p => p.mountPoint === "/boot/efi")?.name;
+        // 2. Processar cada montagem e obter UUID
+        const entries: Array<{ mountPoint: string, uuid: string, type: string, pass: number }> = [];
 
-        if (efiPartition) {
-            const efiDevice = toDev(efiPartition);
-            const stdout = await execCmd('blkid', ['-s', 'UUID', '-o', 'value', efiDevice]);
-            const efiUuid = stdout.trim();
-            // Adiciona a linha EFI. <dump> = 0, <pass> = 2
-            fstabContent += `UUID=${efiUuid} /boot/efi vfat defaults 0 2\n`;
-            console.log("✅ Adicionada partição EFI (/boot/efi) ao fstab básico.");
-        } else {
-            console.log("ℹ️  Nenhuma partição EFI (/boot/efi) definida, pulando (OK para BIOS).");
+        for (const mount of mounts) {
+            // Converter o ponto de montagem para o formato guest (remover tmpFolder)
+            let guestMountPoint = mount.target.replace(tmpFolder, "");
+            if (!guestMountPoint || guestMountPoint === "") {
+                guestMountPoint = "/";
+            }
+
+            // Obter UUID do dispositivo
+            let uuid: string;
+            try {
+                uuid = (await execCmd("blkid", ["-s", "UUID", "-o", "value", mount.source])).trim();
+            } catch {
+                console.warn(`⚠️  Não foi possível obter UUID para ${mount.source}, pulando...`);
+                continue;
+            }
+
+            if (!uuid) {
+                console.warn(`⚠️  UUID vazio para ${mount.source}, pulando...`);
+                continue;
+            }
+
+            // Determinar tipo do filesystem
+            let fsType = mount.fstype;
+            if (guestMountPoint === "/boot/efi" || fsType === "vfat") {
+                fsType = "vfat";
+            }
+
+            // Determinar o valor de pass (fsck order)
+            const pass = guestMountPoint === "/" ? 1 : 2;
+
+            entries.push({
+                mountPoint: guestMountPoint,
+                uuid: uuid,
+                type: fsType,
+                pass: pass
+            });
         }
-    } catch (e) {
-        console.error("⚠️  Erro ao obter UUID da partição EFI:", (e as Error).message);
-        // Não lançar erro aqui, pode ser uma instalação BIOS.
-    }
 
-    // 3. Escrever o arquivo final
-    try {
+        // 3. Verificar se encontrou a raiz
+        const hasRoot = entries.some(e => e.mountPoint === "/");
+        if (!hasRoot) {
+            throw new Error("Partição raiz (/) não encontrada nos pontos de montagem");
+        }
+
+        // 4. Ordenar: raiz primeiro, depois os outros em ordem alfabética
+        entries.sort((a, b) => {
+            if (a.mountPoint === "/") return -1;
+            if (b.mountPoint === "/") return 1;
+            return a.mountPoint.localeCompare(b.mountPoint);
+        });
+
+        // 5. Gerar as entradas do fstab
+        for (const entry of entries) {
+            fstabContent += `UUID=${entry.uuid} ${entry.mountPoint} ${entry.type} defaults 0 ${entry.pass}\n`;
+            console.log(`✅ Adicionada partição ${entry.mountPoint} (${entry.type}) ao fstab`);
+        }
+
+        // 6. Escrever o arquivo
         await Deno.writeTextFile(fstabPath, fstabContent);
-        console.log("✅ fstab básico (Raiz + EFI) criado com sucesso.");
+        console.log("✅ fstab básico criado com sucesso.");
+
     } catch (e) {
-        console.error("❌ Não foi possível escrever o fstab básico:", (e as Error).message);
+        console.error("❌ Erro ao criar fstab básico:", (e as Error).message);
         throw e;
     }
 }

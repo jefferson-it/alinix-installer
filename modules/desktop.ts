@@ -20,11 +20,7 @@ export async function choiceDesktop() {
             {
                 value: 'kde',
                 name: 'KDE'
-            },
-            {
-                value: 'xfce',
-                name: 'xFCE'
-            },
+            }
         ]
     }) as 'gnome' | 'cinnamon' | 'kde' | 'xfce' | null;
 }

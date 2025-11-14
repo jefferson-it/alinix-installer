@@ -35,7 +35,7 @@ export const allApps = [
     },
     {
         value: 'cinnamon',
-        pkg: 'cinnamon nemo lightdm slick-greeter',
+        pkg: 'cinnamon nemo lightdm slick-greeter alinix-cinnamon',
         name: 'Cinnamon',
         postScript: `
             systemctl enable lightdm
@@ -44,19 +44,10 @@ export const allApps = [
     },
     {
         value: 'kde',
-        pkg: 'plasma-desktop sddm dolphin konsole',
+        pkg: 'plasma-desktop sddm dolphin konsole alinix-kde',
         name: 'KDE Plasma',
         postScript: `
             systemctl enable sddm
-            systemctl set-default graphical.target
-        `
-    },
-    {
-        value: 'xfce',
-        pkg: 'xfce4 lightdm lightdm-gtk-greeter',
-        name: 'Xfce',
-        postScript: `
-            systemctl enable lightdm
             systemctl set-default graphical.target
         `
     }

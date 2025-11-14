@@ -6,6 +6,10 @@ declare global {
         password?: string;
         username?: string;
     }
+    var wifi: {
+        ssid: string
+        password: string
+    }
     var disks: Array<disk>
     var timezone: string | null
     var repos: Array<string>
@@ -30,6 +34,7 @@ export interface part {
     partType?: string
     name: string
     type?: string
+    UUID?: string,
     size: number | '100%'
 }
 
