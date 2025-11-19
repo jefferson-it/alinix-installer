@@ -8,9 +8,10 @@ import ChoiceDisk from "./modules/disk.ts";
 import { choiceApps } from "./modules/apps.ts";
 import SummaryInstallation from "./modules/summary.ts";
 import InstallProcess from "./scripts/install.ts";
+import { testNetwork } from "./scripts/network.ts";
+import { connectWiFiInteractive } from "./modules/wifi_connect.ts";
 
 const args = Deno.args
-
 
 if (args.includes('-d') || args.includes('--debug')) {
     const cmd = ["script", "-c", Deno.execPath(), "/tmp/alinix.log"];
@@ -27,6 +28,7 @@ if (args.includes('-d') || args.includes('--debug')) {
 
 if (Deno.uid() !== 0) {
     const cmd = ["sudo", Deno.execPath(), ...Deno.args];
+
     const process = new Deno.Command(cmd[0], {
         args: cmd.slice(1),
         stdin: "inherit",
@@ -43,8 +45,10 @@ globalThis.disks = [];
 globalThis.timezone = null;
 globalThis.repos = [];
 globalThis.apps = [];
+globalThis.wifi = undefined;
 globalThis.desktop = null;
 globalThis.tmpFolder = "/mnt/alinix-temp";
+globalThis.connectedNetwork = await testNetwork();
 
 if (args[0] == "--json") {
     const input = args[1];
@@ -80,6 +84,7 @@ if (args[0] == "--json") {
     globalThis.repos = data.repos;
     globalThis.apps = data.apps;
     globalThis.desktop = data.desktop;
+    globalThis.wifi = data.wifi;
 
     await InstallProcess();
 
@@ -88,6 +93,10 @@ if (args[0] == "--json") {
 
 if (import.meta.main) {
     console.log(banner);
+
+    if (!globalThis.connectedNetwork) {
+        await connectWiFiInteractive()
+    }
 
     await RequestUser();
     await choiceTimezone();

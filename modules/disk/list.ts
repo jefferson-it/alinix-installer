@@ -1,4 +1,5 @@
 import { disk } from "../../index.d.ts";
+import { toDev } from "./replace.ts";
 
 export async function listDisks(): Promise<disk[]> {
     const cmd = new Deno.Command("lsblk", { args: ["-J", '-b', "-o", "NAME,SIZE,TYPE,FSTYPE,PARTTYPE,UUID"] });
@@ -7,16 +8,17 @@ export async function listDisks(): Promise<disk[]> {
 
     // deno-lint-ignore no-explicit-any
     return blockdevices.filter((d: any) => d.type === "disk").map((d: any) => ({
-        name: `/dev/${d.name}`.replace("/dev//dev/", '/dev/'),
+        name: toDev(d.name),
         size: parseFloat((d.size / (1024 ** 3)).toFixed(2)),
         bytes: d.size,
-        children: (d.children || []).map((child: { name: string; size: number; fstype: string; UUID: string }) => ({
-            name: `/dev/${child.name}`.replace("/dev//dev/", '/dev/'),
+        children: (d.children || []).map((child: { name: string; size: number; mountPoint: string; fstype: string; uuid: string }) => ({
+            name: toDev(child.name),
             size: child.size,
             fileSystem: child.fstype === 'vfat' ? 'fat32' : (child.fstype || 'unknown'),
-            mountPoint: null,
+            mountPoint: child.mountPoint || null,
             erase: false,
-            UUID: child.UUID
+            use: true,
+            UUID: child.uuid || null,
         }))
     }));
 }

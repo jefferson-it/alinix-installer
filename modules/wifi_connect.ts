@@ -1,7 +1,5 @@
 import { Secret } from "https://deno.land/x/cliffy@v0.25.5/prompt/secret.ts";
 import { Select } from "https://deno.land/x/cliffy@v0.25.5/prompt/select.ts";
-import { configNetwork } from "../scripts/network.ts";
-
 
 const decoder = new TextDecoder();
 
@@ -45,7 +43,6 @@ async function listWiFiNetworks() {
             .map(ssid => ({ name: ssid, value: ssid }));
     }
 }
-
 /**
  * Conecta à rede Wi-Fi escolhida
  */
@@ -71,19 +68,22 @@ export async function connectWiFiInteractive() {
         stderr: "piped",
     });
 
-    await connectWiFiInChroot(ssid, password);
-
     const { code, stdout, stderr } = await cmd.output();
     const out = decoder.decode(stdout);
     const err = decoder.decode(stderr);
 
-    if (code === 0) {
-        console.log(`[ OK ] Conectado a '${ssid}' com sucesso!`);
-    } else {
+    if (code !== 0) {
         console.error(`[ X ] Falha ao conectar: ${err || out}`);
+        return;
     }
-}
 
+    console.log(`[ OK ] Conectado a '${ssid}' com sucesso!`);
+
+    globalThis.wifi = {
+        ssid,
+        password
+    };
+}
 
 export async function connectWiFiInChroot(ssid: string, password: string) {
     const cmd = new Deno.Command("chroot", {

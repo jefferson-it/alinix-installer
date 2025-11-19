@@ -9,7 +9,7 @@ async function findSquashFS() {
 
     for (const p of possiblePaths) {
         try {
-            if (await existsSync(p)) return p;
+            if (existsSync(p)) return p;
         } catch (_e) {
             // Ignora erros de permissão, etc.
         }

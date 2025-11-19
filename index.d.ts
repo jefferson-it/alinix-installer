@@ -9,13 +9,14 @@ declare global {
     var wifi: {
         ssid: string
         password: string
-    }
+    } | undefined
     var disks: Array<disk>
     var timezone: string | null
     var repos: Array<string>
     var apps: Array<string>
-    var desktop: 'gnome' | 'cinnamon' | 'kde' | 'xfce' | null
+    var desktop: 'gnome' | 'cinnamon' | 'xfce' | null
     var tmpFolder: '/mnt/alinix-temp'
+    var connectedNetwork: boolean
 }
 
 export interface disk {
@@ -36,6 +37,7 @@ export interface part {
     type?: string
     UUID?: string,
     size: number | '100%'
+    use?: boolean
 }
 
 // Importante: isso torna o arquivo um módulo

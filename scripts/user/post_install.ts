@@ -55,6 +55,8 @@ export async function postInstall() {
       echo " Ambiente VirtualBox detectado — instalando virtualbox-guest-utils..."
       apt-get install -y virtualbox-guest-utils virtualbox-guest-x11 || true
       systemctl enable vboxservice || true
+
+      usermod -aG vboxsf ${user.username} || true
     fi
 
     # Limpeza de pacotes e cache

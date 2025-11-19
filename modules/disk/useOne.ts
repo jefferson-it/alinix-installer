@@ -19,9 +19,8 @@ export async function entireDiskMenu() {
         options
     });
 
-    if (disk === "back") {
-        return;
-    }
+    if (disk === "back") return await entireDiskMenu();
+
 
     console.log(`Disco selecionado: ${disk}`);
     const confirm = await Confirm.prompt({
@@ -34,9 +33,8 @@ export async function entireDiskMenu() {
 
     const diskObject = disksLocal.find(v => v.name === disk);
 
-    if (!diskObject) {
-        return;
-    }
+    if (!diskObject) return await entireDiskMenu();
+
 
     diskObject.children = [];
 
@@ -50,6 +48,7 @@ export async function entireDiskMenu() {
         fileSystem: 'fat32',
         size: bootSizeInBytes,
         erase: true,
+        use: true,
         name: '',
     });
 
@@ -74,6 +73,7 @@ export async function entireDiskMenu() {
             fileSystem: 'ext4',
             size: homeSizeInBytes,
             erase: true,
+            use: true,
             name: ''
         });
     }
@@ -83,6 +83,7 @@ export async function entireDiskMenu() {
         fileSystem: 'ext4',
         size: "100%",
         erase: true,
+        use: true,
         name: ''
     });
 

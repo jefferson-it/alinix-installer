@@ -4,17 +4,24 @@ import { execCmd } from "./exec.ts";
 import * as path from "https://deno.land/std@0.224.0/path/mod.ts";
 
 export async function writeGrub() {
+
     const rootPartition = disks.flatMap(d => d.children)
         .find(p => p.mountPoint === "/")?.name;
     if (!rootPartition) throw new Error("Nenhuma partição raiz ('/') encontrada.");
 
     const rootDevice = toDev(rootPartition);
-    const diskDevice = rootDevice.replace(/(p?\d+)$/, '');
 
-    console.log(` Disco detectado: ${diskDevice}`);
-    console.log(` Partição raiz: ${rootDevice}`);
+    // CORREÇÃO NVME → remove apenas o fim (pNN ou N)
+    const diskDevice = rootDevice.includes("nvme")
+        ? rootDevice.replace(/p\d+$/, "")
+        : rootDevice.replace(/\d+$/, "");
+
+    console.log(`📀 Disco detectado: ${diskDevice}`);
+    console.log(`📂 Partição raiz: ${rootDevice}`);
 
     const grubDefaultPath = path.join(tmpFolder, "etc/default/grub");
+
+    // Criar /etc/default/grub se não existir
     try {
         await Deno.stat(grubDefaultPath);
     } catch {
@@ -30,201 +37,283 @@ GRUB_DISABLE_OS_PROBER=false
         await Deno.writeTextFile(grubDefaultPath, grubConfig);
     }
 
+    // ---------------------
+    //   MODO UEFI
+    // ---------------------
     if (await isUEFI()) {
-        console.log(" Modo UEFI detectado. Instalando GRUB para UEFI...");
+        console.log("💾 Modo UEFI detectado. Instalando GRUB para UEFI...");
 
-        // Verificar se /boot/efi existe e está montado
         const efiPartition = disks.flatMap(d => d.children)
             .find(p => p.mountPoint === "/boot/efi");
 
         if (!efiPartition) {
-            throw new Error("⚠️  Partição EFI não encontrada! Certifique-se de ter criado uma partição EFI.");
+            throw new Error("⚠️  Partição EFI não encontrada!");
         }
 
-        console.log(` Partição EFI: ${efiPartition.name}`);
         const efiDevice = toDev(efiPartition.name);
 
-        // Extrair número da partição EFI
-        const efiPartNum = efiDevice.match(/(\d+)$/)?.[1] || "1";
-        console.log(` Disco: ${diskDevice}, Partição EFI: ${efiPartNum}`);
+        // Número da partição EFI
+        const efiPartNum = efiDevice.match(/(\d+)$/)?.[1] ?? "1";
 
-        // Verificar se está montada
-        let isMounted = false;
-        try {
-            await execCmd("mountpoint", ["-q", path.join(tmpFolder, "boot/efi")]);
-            isMounted = true;
-        } catch {
-            isMounted = false;
-        }
+        console.log(`🔧 EFI Device = ${efiDevice}`);
+        console.log(`🔧 EFI Partition Number = ${efiPartNum}`);
 
-        if (!isMounted) {
-            console.log("⚠️  Montando partição EFI...");
-            await execCmd("mkdir", ["-p", path.join(tmpFolder, "boot/efi")]);
-            await execCmd("mount", [toDev(efiPartition.name), path.join(tmpFolder, "boot/efi")]);
-        }
-
-        // Instalar GRUB UEFI
         await execCmd("chroot", [
             tmpFolder,
-            "bash",
+            "/bin/bash",
             "-c",
             `
-            set -e
-            
-            # Verificar se o kernel existe ANTES de instalar GRUB
-            echo " Verificando kernel instalado..."
-            if [ ! -f /boot/vmlinuz-* ]; then
-                echo "❌ ERRO: Nenhum kernel encontrado em /boot!"
-                echo "Conteúdo de /boot:"
-                ls -la /boot/
-                exit 1
-            fi
-            
-            KERNEL_VERSION=\$(ls /boot/vmlinuz-* | head -1 | sed 's/.*vmlinuz-//')
-            echo "✅ Kernel encontrado: \$KERNEL_VERSION"
-            
-            # Instalar pacotes do GRUB
-            echo " Instalando GRUB UEFI..."
-            apt-get update
-            apt-get install -y --reinstall grub-efi-amd64 grub-efi-amd64-bin efibootmgr os-prober
-            
-            # Limpar instalações anteriores
-            rm -rf /boot/efi/EFI/Alinix
-            rm -rf /boot/efi/EFI/ubuntu
-            
-            # Criar diretórios necessários
-            mkdir -p /boot/grub
-            mkdir -p /boot/efi/EFI/Alinix
-            
-            # Instalar GRUB
-            echo " Instalando GRUB no disco..."
-            grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Alinix --recheck --no-floppy
-            
-            # Gerar configuração do GRUB
-            echo " Gerando grub.cfg..."
-            update-grub
-            
-            # Verificar se grub.cfg foi criado e tem conteúdo
-            if [ ! -f /boot/grub/grub.cfg ]; then
-                echo "❌ ERRO: grub.cfg não foi gerado!"
-                exit 1
-            fi
-            
-            GRUB_SIZE=\$(stat -f %z /boot/grub/grub.cfg 2>/dev/null || stat -c %s /boot/grub/grub.cfg)
-            if [ "\$GRUB_SIZE" -lt 100 ]; then
-                echo "❌ ERRO: grub.cfg está vazio ou corrompido!"
-                cat /boot/grub/grub.cfg
-                exit 1
-            fi
-            
-            echo "✅ grub.cfg gerado com \$GRUB_SIZE bytes"
-            
-            # Verificar se o EFI foi instalado
-            if [ ! -f /boot/efi/EFI/Alinix/grubx64.efi ]; then
-                echo "❌ ERRO: GRUB EFI não foi instalado corretamente!"
-                exit 1
-            fi
-            
-            echo "✅ GRUB UEFI instalado com sucesso"
-            echo ""
-            echo " Arquivos instalados:"
-            ls -lh /boot/efi/EFI/Alinix/
-            echo ""
-            echo " Primeiras linhas do grub.cfg:"
-            head -20 /boot/grub/grub.cfg
-            `
+set -e
+
+ROOT_DEVICE="${rootDevice}"
+
+echo "🔍 Verificando kernel instalado..."
+if ! ls /boot/vmlinuz* 1>/dev/null 2>&1; then
+    echo "❌ ERRO: Nenhum kernel encontrado em /boot!"
+    echo "🔍 Procurando em outros locais..."
+    
+    # Procurar em /boot/grub/
+    if ls /boot/grub/vmlinuz* 1>/dev/null 2>&1; then
+        echo "✅ Kernel encontrado em /boot/grub/"
+        KERNEL_PATH="/boot/grub/vmlinuz"
+        INITRD_PATH="/boot/grub/initrd"
+    else
+        echo "❌ Kernel não encontrado em nenhum local!"
+        ls -la /boot/
+        ls -la /boot/grub/ 2>/dev/null || true
+        exit 1
+    fi
+else
+    KERNEL_PATH="/boot/vmlinuz"
+    INITRD_PATH="/boot/initrd"
+fi
+
+KERNEL_FILE=$(ls \${KERNEL_PATH}* 2>/dev/null | head -1)
+KERNEL_VERSION=$(basename "$KERNEL_FILE" | sed 's/vmlinuz-\?//')
+
+if [ -z "$KERNEL_VERSION" ] || [ "$KERNEL_VERSION" = "vmlinuz" ]; then
+    KERNEL_VERSION=$(uname -r)
+fi
+
+echo "✅ Kernel encontrado: $KERNEL_VERSION"
+echo "📂 Kernel path: $KERNEL_PATH"
+echo "📂 Initrd path: $INITRD_PATH"
+
+echo "📦 Instalando GRUB UEFI..."
+apt-get update
+apt-get install -y --reinstall grub-efi-amd64 grub-efi-amd64-bin efibootmgr os-prober
+
+rm -rf /boot/efi/EFI/Alinix
+mkdir -p /boot/grub
+mkdir -p /boot/efi/EFI/Alinix
+
+echo "⚙️  Rodando grub-install..."
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Alinix --recheck
+
+echo "📝 Gerando grub.cfg..."
+update-grub || true
+
+# SEMPRE validar se há entradas menuentry válidas
+HAS_MENU=0
+if [ -f /boot/grub/grub.cfg ]; then
+    if grep -q "^menuentry" /boot/grub/grub.cfg 2>/dev/null; then
+        HAS_MENU=1
+        echo "✅ grub.cfg com entradas válidas encontrado"
+    fi
+fi
+
+# Se não tiver menuentry, criar manualmente
+if [ "\$HAS_MENU" -eq 0 ]; then
+    echo "⚠️  grub.cfg sem entradas de boot, criando manualmente..."
+    
+    ROOT_UUID=\$(blkid -s UUID -o value "\$ROOT_DEVICE")
+    
+    cat > /boot/grub/grub.cfg << 'GRUBEOF'
+# GRUB Configuration - Alinix
+set timeout=5
+set default=0
+
+# Load modules
+insmod part_gpt
+insmod ext2
+insmod fat
+insmod search_fs_uuid
+
+# Menu entries
+menuentry "Alinix" {
+    search --no-floppy --fs-uuid --set=root ROOT_UUID_PLACEHOLDER
+    linux KERNEL_PATH_PLACEHOLDER root=UUID=ROOT_UUID_PLACEHOLDER ro quiet splash components fsck.mode=skip
+    initrd INITRD_PATH_PLACEHOLDER
+}
+
+menuentry "Alinix (Modo de Recuperação)" {
+    search --no-floppy --fs-uuid --set=root ROOT_UUID_PLACEHOLDER
+    linux KERNEL_PATH_PLACEHOLDER root=UUID=ROOT_UUID_PLACEHOLDER ro single
+    initrd INITRD_PATH_PLACEHOLDER
+}
+
+menuentry "UEFI Firmware Settings" {
+    fwsetup
+}
+GRUBEOF
+
+    # Substituir placeholders
+    sed -i "s|ROOT_UUID_PLACEHOLDER|\$ROOT_UUID|g" /boot/grub/grub.cfg
+    sed -i "s|KERNEL_PATH_PLACEHOLDER|\$KERNEL_PATH|g" /boot/grub/grub.cfg
+    sed -i "s|INITRD_PATH_PLACEHOLDER|\$INITRD_PATH|g" /boot/grub/grub.cfg
+    
+    echo "✅ grub.cfg manual criado"
+    echo "   UUID: \$ROOT_UUID"
+    echo "   Kernel: \$KERNEL_PATH"
+    echo "   Initrd: \$INITRD_PATH"
+fi
+
+if [ ! -f /boot/efi/EFI/Alinix/grubx64.efi ]; then
+    echo "❌ ERRO: GRUB EFI não instalado!"
+    exit 1
+fi
+
+echo "✅ UEFI GRUB OK"
+`
         ]);
 
-        // Verificar e adicionar entrada no UEFI
-        console.log(" Configurando boot UEFI...");
+
+        // ------ EFIBOOTMGR ------
+        console.log("🔧 Configurando entradas UEFI...");
+
         await execCmd("chroot", [
             tmpFolder,
-            "bash",
+            "/bin/bash",
             "-c",
             `
-            # Remover entradas antigas do Alinix
-            efibootmgr | grep -i "Alinix" | cut -d' ' -f1 | sed 's/Boot//' | sed 's/*//' | while read -r bootnum; do
-                efibootmgr -b "\$bootnum" -B 2>/dev/null || true
-            done
-            
-            # Criar nova entrada (usar número correto da partição)
-            PART_NUM=${efiPartNum}
-            efibootmgr -c -d ${diskDevice} -p \$PART_NUM -L "Alinix" -l "\\EFI\\Alinix\\grubx64.efi"
-            
-            # Definir Alinix como primeira opção de boot
-            BOOT_NUM=$(efibootmgr | grep "Alinix" | cut -d' ' -f1 | sed 's/Boot//' | sed 's/*//')
-            if [ -n "\$BOOT_NUM" ]; then
-                efibootmgr -o \$BOOT_NUM
-            fi
-            
-            # Listar entradas
-            efibootmgr -v
-            `
+# REMOVER entradas antigas "Alinix"
+efibootmgr | grep -i "Alinix" | sed 's/Boot//' | sed 's/*//' | cut -d' ' -f1 |
+while read n; do
+    efibootmgr -b "\$n" -B 2>/dev/null || true
+done
+
+# adicionar entrada nova
+efibootmgr -c -d ${diskDevice} -p ${efiPartNum} -L "Alinix" -l "\\\\EFI\\\\Alinix\\\\grubx64.efi"
+
+# definir como primeira
+NEW=\$(efibootmgr | grep "Alinix" | head -1 | sed 's/Boot//' | sed 's/*//' | cut -d' ' -f1)
+if [ -n "\$NEW" ]; then
+    efibootmgr -o \$NEW
+fi
+
+efibootmgr -v
+`
         ]);
 
         console.log("✅ GRUB UEFI instalado e configurado!");
         return;
     }
 
-    // Modo BIOS/Legacy
-    console.log(" Modo BIOS/Legacy detectado. Instalando GRUB...");
+    // ---------------------
+    //     MODO BIOS
+    // ---------------------
+
+    console.log("💾 Modo BIOS detectado. Instalando GRUB BIOS...");
 
     await execCmd("chroot", [
         tmpFolder,
         "bash",
         "-c",
         `
-        set -e
-        
-        # Verificar se o kernel existe ANTES de instalar GRUB
-        echo " Verificando kernel instalado..."
-        if [ ! -f /boot/vmlinuz-* ]; then
-            echo "❌ ERRO: Nenhum kernel encontrado em /boot!"
-            echo "Conteúdo de /boot:"
-            ls -la /boot/
-            exit 1
-        fi
-        
-        KERNEL_VERSION=\$(ls /boot/vmlinuz-* | head -1 | sed 's/.*vmlinuz-//')
-        echo "✅ Kernel encontrado: \$KERNEL_VERSION"
-        
-        # Instalar pacotes do GRUB
-        echo " Instalando GRUB BIOS..."
-        apt-get update
-        apt-get install -y --reinstall grub-pc grub-pc-bin os-prober
-        
-        # Instalar GRUB no disco (não na partição)
-        echo " Instalando GRUB em ${diskDevice}..."
-        grub-install --target=i386-pc --recheck --no-floppy ${diskDevice}
-        
-        # Gerar configuração
-        echo " Gerando grub.cfg..."
-        update-grub
-        
-        # Verificar se foi instalado
-        if [ ! -d /boot/grub ]; then
-            echo "❌ ERRO: GRUB não foi instalado corretamente!"
-            exit 1
-        fi
-        
-        if [ ! -f /boot/grub/grub.cfg ]; then
-            echo "❌ ERRO: grub.cfg não foi gerado!"
-            exit 1
-        fi
-        
-        GRUB_SIZE=\$(stat -f %z /boot/grub/grub.cfg 2>/dev/null || stat -c %s /boot/grub/grub.cfg)
-        if [ "\$GRUB_SIZE" -lt 100 ]; then
-            echo "❌ ERRO: grub.cfg está vazio ou corrompido!"
-            cat /boot/grub/grub.cfg
-            exit 1
-        fi
-        
-        echo "✅ GRUB BIOS instalado com sucesso"
-        echo "✅ grub.cfg gerado com \$GRUB_SIZE bytes"
-        echo ""
-        echo " Primeiras linhas do grub.cfg:"
-        head -20 /boot/grub/grub.cfg
-        `
+set -e
+
+ROOT_DEVICE="${rootDevice}"
+
+echo "🔍 Verificando kernel..."
+if ! ls /boot/vmlinuz* 1>/dev/null 2>&1; then
+    echo "❌ Nenhum kernel encontrado em /boot!"
+    echo "🔍 Procurando em outros locais..."
+    
+    # Procurar em /boot/grub/
+    if ls /boot/grub/vmlinuz* 1>/dev/null 2>&1; then
+        echo "✅ Kernel encontrado em /boot/grub/"
+        KERNEL_PATH="/boot/grub/vmlinuz"
+        INITRD_PATH="/boot/grub/initrd"
+    else
+        echo "❌ Kernel não encontrado em nenhum local!"
+        ls -la /boot/
+        ls -la /boot/grub/ 2>/dev/null || true
+        exit 1
+    fi
+else
+    KERNEL_PATH="/boot/vmlinuz"
+    INITRD_PATH="/boot/initrd"
+fi
+
+KERNEL_FILE=$(ls \${KERNEL_PATH}* 2>/dev/null | head -1)
+KERNEL_VERSION=$(basename "$KERNEL_FILE" | sed 's/vmlinuz-\?//')
+
+if [ -z "$KERNEL_VERSION" ] || [ "$KERNEL_VERSION" = "vmlinuz" ]; then
+    KERNEL_VERSION=$(uname -r)
+fi
+
+echo "✅ Kernel encontrado: $KERNEL_VERSION"
+echo "📂 Kernel path: $KERNEL_PATH"
+echo "📂 Initrd path: $INITRD_PATH"
+
+echo "📦 Instalando pacotes GRUB BIOS..."
+apt-get update
+apt-get install -y --reinstall grub-pc grub-pc-bin os-prober
+
+echo "⚙️  Instalando GRUB em ${diskDevice}..."
+grub-install --target=i386-pc --recheck ${diskDevice}
+
+echo "📝 Gerando grub.cfg..."
+update-grub
+
+# Validar grub.cfg
+if [ ! -f /boot/grub/grub.cfg ]; then
+    echo "⚠️  grub.cfg não encontrado, criando manualmente..."
+elif ! grep -q "menuentry" /boot/grub/grub.cfg; then
+    echo "⚠️  grub.cfg sem entradas de boot, recriando..."
+    rm -f /boot/grub/grub.cfg
+else
+    SIZE=\$(stat -c %s /boot/grub/grub.cfg)
+    if [ "\$SIZE" -lt 100 ]; then
+        echo "⚠️  grub.cfg muito pequeno, recriando..."
+        rm -f /boot/grub/grub.cfg
+    else
+        echo "✅ grub.cfg validado com sucesso"
+    fi
+fi
+
+# Criar grub.cfg manualmente se necessário
+if [ ! -f /boot/grub/grub.cfg ] || ! grep -q "menuentry" /boot/grub/grub.cfg 2>/dev/null; then
+    echo "🔧 Criando grub.cfg manual..."
+    
+    ROOT_UUID=\$(blkid -s UUID -o value "\$ROOT_DEVICE")
+    
+    cat > /boot/grub/grub.cfg << GRUBEOF
+set timeout=5
+set default=0
+
+insmod part_msdos
+insmod part_gpt
+insmod ext2
+
+menuentry "Alinix" {
+    search --no-floppy --fs-uuid --set=root \$ROOT_UUID
+    linux \$KERNEL_PATH root=UUID=\$ROOT_UUID ro quiet splash components fsck.mode=skip
+    initrd \$INITRD_PATH
+}
+
+menuentry "Alinix (Modo de Recuperação)" {
+    search --no-floppy --fs-uuid --set=root \$ROOT_UUID
+    linux \$KERNEL_PATH root=UUID=\$ROOT_UUID ro single
+    initrd \$INITRD_PATH
+}
+GRUBEOF
+    
+    echo "✅ grub.cfg manual criado com UUID: \$ROOT_UUID"
+fi
+
+echo "✅ GRUB BIOS instalado com sucesso"
+`
     ]);
 
     console.log("✅ GRUB BIOS instalado e configurado!");

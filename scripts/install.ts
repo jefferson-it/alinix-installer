@@ -1,5 +1,4 @@
 import { defineApps } from "./user/apps.ts";
-import * as path from "https://deno.land/std@0.224.0/path/mod.ts";
 import { writeGrub } from "./system/grub.ts";
 import { postInstall } from "./user/post_install.ts";
 import { applyRepo } from "./system/write_repo.ts";
@@ -13,8 +12,6 @@ import { mountDevices } from "./system/mount.ts";
 import { genFstab } from "./system/fstab.ts";
 import { extractSquashFS } from "./system/extractSquashFS.ts";
 import { copyBootFiles } from "./system/copyBoot.ts";
-import { isUEFI } from "./disk/verify.ts";
-import { toDev } from "../modules/disk/replace.ts";
 
 export default async function InstallProcess() {
     Deno.mkdirSync(tmpFolder, { recursive: true });
@@ -26,39 +23,20 @@ export default async function InstallProcess() {
     await execCmd("./disk.sh");
     await extractSquashFS();
 
-    if (await isUEFI()) {
-        console.log("[VERIFICAÇÃO] Garantindo que a partição EFI está montada...");
-        const efiPartition = disks.flatMap(d => d.children)
-            .find(p => p.mountPoint === "/boot/efi");
-
-        if (efiPartition) {
-            const efiMountPoint = path.join(tmpFolder, "boot/efi");
-
-            try {
-                await execCmd("mkdir", ["-p", efiMountPoint]);
-                await execCmd("mount", [toDev(efiPartition.name), efiMountPoint]);
-                console.log(`[ OK ] Partição ${toDev(efiPartition.name)} montada em ${efiMountPoint}`);
-            } catch (e) {
-                console.log(`[ INFO ] Partição EFI já estava montada ou ocorreu um erro: ${e}`);
-            }
-        } else {
-            console.log("⚠️  Nenhuma partição /boot/efi definida nos discos.");
-        }
-    }
-
     await CreateUser();
     await mountDevices();
 
     console.log("> Configurando rede...");
 
-
     if (!await testNetwork()) {
-        if (globalThis.wifi) {
-            await connectWiFiInChroot(globalThis.wifi.ssid, globalThis.wifi.password)
-        } else {
-            await connectWiFiInteractive();
-        }
+        await connectWiFiInteractive();
     }
+
+    if (wifi) {
+        await connectWiFiInChroot(wifi.ssid, wifi.password)
+    }
+
+
     try {
         console.log("> Copiando DNS do host para o chroot...");
         Deno.copyFileSync("/etc/resolv.conf", `${tmpFolder}/etc/resolv.conf`);
@@ -98,12 +76,21 @@ network:
 
 
     console.log("[ APT ] Definindo aplicativos...");
-    const scriptApp = await defineApps();
+    const scriptApp = defineApps();
     Deno.writeTextFileSync(`${tmpFolder}/root/apps.sh`, scriptApp, { mode: 0o755 });
 
     console.log("[ APT ] Aplicando repositórios...");
     applyRepo()
     console.log("[ APT ] Instalando aplicativos dentro do disco...");
+
+    await copyBootFiles();
+
+    try {
+        console.log("[ CFG ] Instalando o GRUB...");
+        await writeGrub();
+    } catch (error) {
+        console.log('[ ! ] Ocorreu um erro ao instalar o grub:', error);
+    }
 
     await execCmd("chroot", [
         tmpFolder,
@@ -111,18 +98,6 @@ network:
         "-c",
         `/root/apps.sh`,
     ]);
-
-    await copyBootFiles();
-
-
-    try {
-        console.log("[ CFG ] Instalando o GRUB...");
-        await writeGrub();
-
-    } catch (error) {
-        console.log('[ ! ] Ocorreu um erro ao instalar o grub:', error);
-
-    }
 
     console.log("Limpando e configurando pós-instalação...");
     await postInstall();
@@ -149,6 +124,10 @@ network:
     [ OK ]  Instalação concluída com sucesso!
     ===========================================
     `);
+
+    if (Deno.args[0] == "--json") {
+        Deno.exit(0);
+    }
 
     const useFun = await Select.prompt({
         message: "Continuar testando?",
